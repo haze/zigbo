@@ -13,6 +13,27 @@ Zigbo was initially built between January 21st and January 24th.
 ### where
 Zigbo was proudly built in New York City.
 
+### example build graph (zigbo's)
+
+``` mermaid
+flowchart TD
+	subgraph tls_0 [Copy build artifacts to prefix path]
+	step_0[Opaque Top Level Step]
+	step_0 --> step_1["InstallArtifactStep: (install zigbo)\ndestination: build.InstallDir{ .lib = void }"]
+	step_1 --> step_2["LibExeObjStep (zigbo)\nkind: lib\nmode: Debug\nlinkage: static\nroot_src: '/Users/haze/Code/zigbo/src/main.zig'"]
+	end
+	subgraph tls_1 [Remove build artifacts from prefix path]
+	step_3[Opaque Top Level Step]
+	end
+	subgraph tls_2 [Run library tests]
+	step_4[Opaque Top Level Step]
+	step_4 --> step_5["LibExeObjStep (test)\nkind: test\nmode: Debug\nroot_src: '/Users/haze/Code/zigbo/src/main.zig'"]
+	end
+	subgraph tls_3 [Output the build graph as a mermaid diagram]
+	step_6[Opaque Top Level Step]
+	step_6 --> step_7["Opaque Custom Step (Graph Output)"]
+	end
+```
 
 <sup>
 Licensed under either of <a href="LICENSE-APACHE">Apache License, Version
