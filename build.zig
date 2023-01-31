@@ -19,6 +19,13 @@ pub fn build(b: *std.build.Builder) void {
     var stdout = std.io.getStdOut();
     var stdout_writer = stdout.writer();
     const graph_step = zigbo.graphOutputStep(b, stdout_writer);
+    graph_step.setCustomStepCallback(customCallback);
     const build_graph_step = b.step("graph", "Output the build graph as a mermaid diagram");
     build_graph_step.dependOn(&graph_step.step);
+}
+
+fn customCallback(step: *std.build.Step, writer: anytype) !?zigbo.GraphOutputWriteFnInstruction {
+    _ = writer;
+    if (std.mem.eql(u8, step.name, "foobarbaz\x00" ** 23)) return null;
+    return .use_default_implementation;
 }
