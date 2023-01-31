@@ -1,88 +1,55 @@
 const std = @import("std");
 
+pub const GraphOutputWriteFnInstruction = enum {
+    /// Simply print out "Opaque Custom Step (step_name)"
+    use_default_implementation,
+};
+
+pub fn graphOutputStep(builder: *std.build.Builder, writer: anytype) *GraphOutputStep(@TypeOf(writer)) {
+    return GraphOutputStep(@TypeOf(writer)).init(builder, writer);
+}
+
 /// Outputs a mermaid diagram describing the build graph
 pub fn GraphOutputStep(comptime WriterType: type) type {
     return struct {
         const Self = @This();
-        pub const formatting = struct {
-            pub const Artifact = struct {
-                lib_exe_obj_step: *std.build.LibExeObjStep,
+        writer: Writer,
+        builder: *std.build.Builder,
+        step: std.build.Step,
+        custom_step_callback: *const GraphOutputWriteFn = defaultCustomStepCallback,
 
-                pub fn format(
-                    artifact: Artifact,
-                    comptime fmt: []const u8,
-                    options: std.fmt.FormatOptions,
-                    writer: anytype,
-                ) !void {
-                    _ = fmt;
-                    _ = options;
-                    try step_inspection_functions.annotateLibExeObjStep(&artifact.lib_exe_obj_step.step, writer, .{
-                        .print_newlines = false,
-                        .print_in_between_quotes = false,
-                    });
+        pub const Writer = WriterType;
+
+        pub fn defaultCustomStepCallback(step: *std.build.Step, writer: Writer) Writer.Error!?GraphOutputWriteFnInstruction {
+            _ = writer;
+            _ = step;
+            return .use_default_implementation;
+        }
+
+        pub fn init(builder: *std.build.Builder, writer: Writer) *Self {
+            var graph_output_step = builder.allocator.create(Self) catch unreachable;
+            graph_output_step.* = Self{
+                .writer = writer,
+                .builder = builder,
+                .step = std.build.Step.init(.custom, "Graph Output", builder.allocator, Self.make),
+            };
+            return graph_output_step;
+        }
+
+        pub fn setCustomStepCallback(self: *Self, comptime callback: anytype) void {
+            switch (@typeInfo(@TypeOf(callback))) {
+                .Fn => {},
+                else => @compileError("Expected function, got " ++ @typeName(@TypeOf(callback))),
+            }
+
+            const gen = struct {
+                fn callbackWrapper(step: *std.build.Step, writer: Writer) Writer.Error!?GraphOutputWriteFnInstruction {
+                    return @call(.always_inline, callback, .{ step, writer });
                 }
             };
 
-            pub const FormattedFileSource = struct {
-                builder: *std.build.Builder,
-                file_source: std.build.FileSource,
-
-                pub fn format(
-                    file_source: FormattedFileSource,
-                    comptime fmt: []const u8,
-                    options: std.fmt.FormatOptions,
-                    writer: anytype,
-                ) !void {
-                    _ = fmt;
-                    _ = options;
-                    const path = file_source.file_source.getPath(file_source.builder);
-                    defer file_source.builder.allocator.free(path);
-                    try writer.writeAll(path);
-                }
-            };
-
-            pub const FormattedInstallDir = struct {
-                install_dir: std.build.InstallDir,
-
-                pub fn format(
-                    formatted_install_directory: FormattedInstallDir,
-                    comptime fmt: []const u8,
-                    options: std.fmt.FormatOptions,
-                    writer: anytype,
-                ) !void {
-                    _ = fmt;
-                    _ = options;
-
-                    switch (formatted_install_directory.install_dir) {
-                        .prefix => try writer.writeAll("prefix"),
-                        .lib => try writer.writeAll("lib"),
-                        .bin => try writer.writeAll("bin"),
-                        .header => try writer.writeAll("header"),
-                        .custom => |path| try writer.print("'{s}'", .{path}),
-                    }
-                }
-            };
-
-            pub const RunStepArg = struct {
-                arg: std.build.RunStep.Arg,
-                builder: *std.build.Builder,
-
-                pub fn format(
-                    run_step_arg: RunStepArg,
-                    comptime fmt: []const u8,
-                    options: std.fmt.FormatOptions,
-                    writer: anytype,
-                ) !void {
-                    _ = options;
-                    _ = fmt;
-                    switch (run_step_arg.arg) {
-                        .bytes => |bytes| try writer.print("&quot;{s}&quot;", .{bytes}),
-                        .file_source => |file_source| try writer.print("{}", .{formatting.FormattedFileSource{ .file_source = file_source, .builder = run_step_arg.builder }}),
-                        .artifact => |artifact| try writer.print("{}", .{formatting.Artifact{ .lib_exe_obj_step = artifact }}),
-                    }
-                }
-            };
-        };
+            self.custom_step_callback = gen.callbackWrapper;
+        }
 
         pub const AnnotatedBuiltinStep = struct {
             step: *std.build.Step,
@@ -92,7 +59,7 @@ pub fn GraphOutputStep(comptime WriterType: type) type {
                 annotated_builtin_step: AnnotatedBuiltinStep,
                 comptime fmt: []const u8,
                 options: std.fmt.FormatOptions,
-                writer: anytype,
+                writer: Writer,
             ) !void {
                 _ = fmt;
                 _ = options;
@@ -105,18 +72,15 @@ pub fn GraphOutputStep(comptime WriterType: type) type {
                         .print_in_between_quotes = true,
                     }),
                     .run => step_inspection_functions.annotateRunStep(annotated_builtin_step.step, writer),
-                    .custom => {
-                        var should_use_default_implementation = false;
-                        if (annotated_builtin_step.graph_output_step.maybe_custom_step_callback) |customFormatFn| {
-                            const maybe_instruction = try customFormatFn(annotated_builtin_step.step, writer);
-                            should_use_default_implementation = maybe_instruction != null and maybe_instruction.? == .use_default_implementation;
-                        } else {
-                            should_use_default_implementation = true;
-                        }
-                        if (should_use_default_implementation) {
-                            try writer.print("\"Opaque Custom Step ({s})\"", .{annotated_builtin_step.step.name});
+                    .custom => blk: {
+                        const customFormatFn = annotated_builtin_step.graph_output_step.custom_step_callback;
+                        const maybe_instruction = try customFormatFn(annotated_builtin_step.step, writer);
+                        const instruction = maybe_instruction orelse break :blk;
+                        switch (instruction) {
+                            .use_default_implementation => try writer.print("\"Opaque Custom Step ({s})\"", .{annotated_builtin_step.step.name}),
                         }
                     },
+
                     // TODO(haze): better messages for these
                     .options => try writer.writeAll("Options step"),
                     .install_raw => try writer.writeAll("InstallRaw step"),
@@ -135,126 +99,9 @@ pub fn GraphOutputStep(comptime WriterType: type) type {
             }
         };
 
-        pub const step_inspection_functions = struct {
-            pub fn annotateTopLevelStep(step: *std.build.Step, writer: anytype) !void {
-                _ = step;
-                try writer.writeAll("Opaque Top Level Step");
-                // Disabled until TopLevelStep is marked as public
-                // const top_level_step = @fieldParentPtr(std.build.Builder.TopLevelStep, "step", step);
-                // try writer.writeAll(top_level_step.description);
-            }
-
-            pub fn annotateLibExeObjStep(step: *std.build.Step, writer: anytype, options: struct {
-                print_newlines: bool,
-                print_in_between_quotes: bool,
-            }) !void {
-                const lib_exe_obj_step = @fieldParentPtr(std.build.LibExeObjStep, "step", step);
-                if (options.print_in_between_quotes) {
-                    try writer.writeByte('"');
-                }
-
-                try writer.writeAll("LibExeObjStep");
-
-                if (!options.print_in_between_quotes) {
-                    try writer.print("{{name: '{s}'", .{lib_exe_obj_step.name});
-                } else {
-                    try writer.print(" ({s})", .{lib_exe_obj_step.name});
-                }
-
-                if (options.print_newlines) {
-                    try writer.writeAll("\\n");
-                } else {
-                    try writer.writeAll(", ");
-                }
-
-                try writer.print("kind: {s}", .{@tagName(lib_exe_obj_step.kind)});
-
-                if (options.print_newlines) {
-                    try writer.writeAll("\\n");
-                } else {
-                    try writer.writeAll(", ");
-                }
-                try writer.print("mode: {s}", .{@tagName(lib_exe_obj_step.build_mode)});
-
-                if (lib_exe_obj_step.linkage) |linkage| {
-                    if (options.print_newlines) {
-                        try writer.writeAll("\\n");
-                    } else {
-                        try writer.writeAll(", ");
-                    }
-                    try writer.print("linkage: {s}", .{@tagName(linkage)});
-                }
-
-                if (lib_exe_obj_step.root_src) |root_src| {
-                    if (options.print_newlines) {
-                        try writer.writeAll("\\n");
-                    } else {
-                        try writer.writeAll(", ");
-                    }
-                    try writer.print("root_src: '{}'", .{formatting.FormattedFileSource{ .file_source = root_src, .builder = lib_exe_obj_step.builder }});
-                }
-
-                if (lib_exe_obj_step.version) |version| {
-                    if (options.print_newlines) {
-                        try writer.writeAll("\\n");
-                    } else {
-                        try writer.writeAll(", ");
-                    }
-                    try writer.print("version: {}", .{version});
-                }
-
-                if (options.print_in_between_quotes) {
-                    try writer.writeByte('"');
-                } else {
-                    try writer.writeByte('}');
-                }
-            }
-
-            pub fn annotateGraphOutputStep(step: *std.Build.Step, writer: anytype) !void {
-                _ = step;
-                try writer.writeAll("GraphOutputStep");
-            }
-
-            // TODO(haze): annotate envmap
-            pub fn annotateRunStep(step: *std.build.Step, writer: anytype) !void {
-                const run_step = @fieldParentPtr(std.build.RunStep, "step", step);
-
-                try writer.writeAll("\"RunStep\\nargv: [");
-                for (run_step.argv.items) |arg, index| {
-                    try writer.print("{}", .{formatting.RunStepArg{ .arg = arg, .builder = run_step.builder }});
-                    if (index != run_step.argv.items.len - 1) {
-                        try writer.writeAll(", ");
-                    }
-                }
-                try writer.writeAll("]");
-
-                if (run_step.cwd) |cwd| {
-                    try writer.print("\\ncwd: '{s}'", .{cwd});
-                }
-
-                if (run_step.expected_exit_code) |exit_code| {
-                    try writer.print("\\nexpecting exit code: {}", .{exit_code});
-                }
-
-                try writer.writeAll("\"");
-            }
-
-            pub fn annotateInstallArtifactStep(step: *std.build.Step, writer: anytype) !void {
-                const install_artifact_step = @fieldParentPtr(std.build.InstallArtifactStep, "step", step);
-
-                try writer.print("\"InstallArtifactStep: ({s})\\ndestination: {}\"", .{ install_artifact_step.step.name, install_artifact_step.dest_dir });
-
-                if (install_artifact_step.pdb_dir) |pdb_directory| {
-                    try writer.print("\\nPDB directory: {}", .{pdb_directory});
-                }
-
-                if (install_artifact_step.pdb_dir) |header_directory| {
-                    try writer.print("\\nHeader directory: {}", .{header_directory});
-                }
-            }
-        };
-
         pub const Header = struct {
+            direction: Direction,
+
             pub const Direction = enum {
                 top_to_bottom,
                 top_down,
@@ -266,7 +113,7 @@ pub fn GraphOutputStep(comptime WriterType: type) type {
                     direction: Direction,
                     comptime fmt: []const u8,
                     options: std.fmt.FormatOptions,
-                    writer: anytype,
+                    writer: Writer,
                 ) !void {
                     _ = options;
                     _ = fmt;
@@ -280,13 +127,11 @@ pub fn GraphOutputStep(comptime WriterType: type) type {
                 }
             };
 
-            direction: Direction,
-
             pub fn format(
                 header: Header,
                 comptime fmt: []const u8,
                 options: std.fmt.FormatOptions,
-                writer: anytype,
+                writer: Writer,
             ) !void {
                 _ = options;
                 _ = fmt;
@@ -303,7 +148,7 @@ pub fn GraphOutputStep(comptime WriterType: type) type {
                     start: Start,
                     comptime fmt: []const u8,
                     options: std.fmt.FormatOptions,
-                    writer: anytype,
+                    writer: Writer,
                 ) !void {
                     _ = options;
                     _ = fmt;
@@ -315,7 +160,7 @@ pub fn GraphOutputStep(comptime WriterType: type) type {
                     end: End,
                     comptime fmt: []const u8,
                     options: std.fmt.FormatOptions,
-                    writer: anytype,
+                    writer: Writer,
                 ) !void {
                     _ = end;
                     _ = options;
@@ -340,7 +185,7 @@ pub fn GraphOutputStep(comptime WriterType: type) type {
                 edge: Edge,
                 comptime fmt: []const u8,
                 options: std.fmt.FormatOptions,
-                writer: anytype,
+                writer: Writer,
             ) !void {
                 _ = options;
                 _ = fmt;
@@ -380,7 +225,7 @@ pub fn GraphOutputStep(comptime WriterType: type) type {
                 node: Node,
                 comptime fmt: []const u8,
                 options: std.fmt.FormatOptions,
-                writer: anytype,
+                writer: Writer,
             ) !void {
                 _ = options;
                 _ = fmt;
@@ -398,37 +243,11 @@ pub fn GraphOutputStep(comptime WriterType: type) type {
             }
         };
 
-        pub const GraphOutputWriteFnInstruction = enum {
-            /// Simply print out "Opaque Custom Step (step_name)"
-            use_default_implementation,
-        };
-        pub const GraphOutputWriteFnResult = Writer.Error!?GraphOutputWriteFnInstruction;
-        pub const GraphOutputWriteFn = *const fn (step: *std.build.Step, writer: Writer) GraphOutputWriteFnResult;
+        pub const GraphOutputWriteFn = fn (step: *std.build.Step, writer: Writer) Writer.Error!?GraphOutputWriteFnInstruction;
 
-        pub const Writer = WriterType;
-        writer: Writer,
-        builder: *std.build.Builder,
-        step: std.build.Step,
-        maybe_custom_step_callback: ?GraphOutputWriteFn,
-
-        pub fn init(builder: *std.build.Builder, writer: Writer, maybe_custom_step_output_fn: ?GraphOutputWriteFn) *@This() {
-            var graph_output_step = builder.allocator.create(@This()) catch unreachable;
-            graph_output_step.* = @This(){
-                .writer = writer,
-                .builder = builder,
-                .step = std.build.Step.init(.custom, "Graph Output", builder.allocator, @This().make),
-                .maybe_custom_step_callback = maybe_custom_step_output_fn,
-            };
-            return graph_output_step;
-        }
-
-        pub fn make(type_erased_graph_output_step: *std.build.Step) !void {
-            const graph_output_step = @fieldParentPtr(@This(), "step", type_erased_graph_output_step);
-            try graph_output_step.writer.print("{}\n", .{
-                Header{
-                    .direction = .top_down,
-                },
-            });
+        fn make(type_erased_graph_output_step: *std.build.Step) anyerror!void {
+            const graph_output_step = @fieldParentPtr(Self, "step", type_erased_graph_output_step);
+            try graph_output_step.writer.print("{}\n", .{Header{ .direction = .top_down }});
             var subgraph_counter: usize = 0;
 
             var step_id_map = std.AutoHashMapUnmanaged(*std.build.Step, usize){};
@@ -498,3 +317,201 @@ pub fn GraphOutputStep(comptime WriterType: type) type {
         }
     };
 }
+
+const step_inspection_functions = struct {
+    pub fn annotateTopLevelStep(step: *std.build.Step, writer: anytype) !void {
+        // TODO: This is a hack around the fact that `std.build.Builder.TopLevelStep` is a private decl.
+        // Look into whether it could be made public upstream.
+        const TopLevelStep = std.meta.FieldType(std.build.Builder, .install_tls);
+        const top_level_step = step.cast(TopLevelStep).?;
+        try writer.print("\"Top Level Step\ndescription: {s}\"", .{top_level_step.description});
+    }
+
+    pub fn annotateLibExeObjStep(step: *std.build.Step, writer: anytype, options: struct {
+        print_newlines: bool,
+        print_in_between_quotes: bool,
+    }) !void {
+        const lib_exe_obj_step = @fieldParentPtr(std.build.LibExeObjStep, "step", step);
+        if (options.print_in_between_quotes) {
+            try writer.writeByte('"');
+        }
+
+        try writer.writeAll("LibExeObjStep");
+
+        if (!options.print_in_between_quotes) {
+            try writer.print("{{name: '{s}'", .{lib_exe_obj_step.name});
+        } else {
+            try writer.print(" ({s})", .{lib_exe_obj_step.name});
+        }
+
+        if (options.print_newlines) {
+            try writer.writeAll("\\n");
+        } else {
+            try writer.writeAll(", ");
+        }
+
+        try writer.print("kind: {s}", .{@tagName(lib_exe_obj_step.kind)});
+
+        if (options.print_newlines) {
+            try writer.writeAll("\\n");
+        } else {
+            try writer.writeAll(", ");
+        }
+        try writer.print("mode: {s}", .{@tagName(lib_exe_obj_step.build_mode)});
+
+        if (lib_exe_obj_step.linkage) |linkage| {
+            if (options.print_newlines) {
+                try writer.writeAll("\\n");
+            } else {
+                try writer.writeAll(", ");
+            }
+            try writer.print("linkage: {s}", .{@tagName(linkage)});
+        }
+
+        if (lib_exe_obj_step.root_src) |root_src| {
+            if (options.print_newlines) {
+                try writer.writeAll("\\n");
+            } else {
+                try writer.writeAll(", ");
+            }
+            try writer.print("root_src: '{}'", .{formatting.FormattedFileSource{ .file_source = root_src, .builder = lib_exe_obj_step.builder }});
+        }
+
+        if (lib_exe_obj_step.version) |version| {
+            if (options.print_newlines) {
+                try writer.writeAll("\\n");
+            } else {
+                try writer.writeAll(", ");
+            }
+            try writer.print("version: {}", .{version});
+        }
+
+        if (options.print_in_between_quotes) {
+            try writer.writeByte('"');
+        } else {
+            try writer.writeByte('}');
+        }
+    }
+
+    pub fn annotateGraphOutputStep(step: *std.Build.Step, writer: anytype) !void {
+        _ = step;
+        try writer.writeAll("GraphOutputStep");
+    }
+
+    // TODO(haze): annotate envmap
+    pub fn annotateRunStep(step: *std.build.Step, writer: anytype) !void {
+        const run_step = @fieldParentPtr(std.build.RunStep, "step", step);
+
+        try writer.writeAll("\"RunStep\\nargv: [");
+        for (run_step.argv.items) |arg, index| {
+            try writer.print("{}", .{formatting.RunStepArg{ .arg = arg, .builder = run_step.builder }});
+            if (index != run_step.argv.items.len - 1) {
+                try writer.writeAll(", ");
+            }
+        }
+        try writer.writeAll("]");
+
+        if (run_step.cwd) |cwd| {
+            try writer.print("\\ncwd: '{s}'", .{cwd});
+        }
+
+        if (run_step.expected_exit_code) |exit_code| {
+            try writer.print("\\nexpecting exit code: {}", .{exit_code});
+        }
+
+        try writer.writeAll("\"");
+    }
+
+    pub fn annotateInstallArtifactStep(step: *std.build.Step, writer: anytype) !void {
+        const install_artifact_step = @fieldParentPtr(std.build.InstallArtifactStep, "step", step);
+
+        try writer.print("\"InstallArtifactStep: ({s})\\ndestination: {}\"", .{ install_artifact_step.step.name, install_artifact_step.dest_dir });
+
+        if (install_artifact_step.pdb_dir) |pdb_directory| {
+            try writer.print("\\nPDB directory: {}", .{pdb_directory});
+        }
+
+        if (install_artifact_step.pdb_dir) |header_directory| {
+            try writer.print("\\nHeader directory: {}", .{header_directory});
+        }
+    }
+};
+
+const formatting = struct {
+    pub const Artifact = struct {
+        lib_exe_obj_step: *std.build.LibExeObjStep,
+
+        pub fn format(
+            artifact: Artifact,
+            comptime fmt: []const u8,
+            options: std.fmt.FormatOptions,
+            writer: anytype,
+        ) !void {
+            _ = fmt;
+            _ = options;
+            try step_inspection_functions.annotateLibExeObjStep(&artifact.lib_exe_obj_step.step, writer, .{
+                .print_newlines = false,
+                .print_in_between_quotes = false,
+            });
+        }
+    };
+
+    pub const FormattedFileSource = struct {
+        builder: *std.build.Builder,
+        file_source: std.build.FileSource,
+
+        pub fn format(
+            file_source: FormattedFileSource,
+            comptime fmt: []const u8,
+            options: std.fmt.FormatOptions,
+            writer: anytype,
+        ) !void {
+            _ = fmt;
+            _ = options;
+            const path = file_source.file_source.getPath(file_source.builder);
+            try writer.writeAll(path);
+        }
+    };
+
+    pub const FormattedInstallDir = struct {
+        install_dir: std.build.InstallDir,
+
+        pub fn format(
+            formatted_install_directory: FormattedInstallDir,
+            comptime fmt: []const u8,
+            options: std.fmt.FormatOptions,
+            writer: anytype,
+        ) !void {
+            _ = fmt;
+            _ = options;
+
+            switch (formatted_install_directory.install_dir) {
+                .prefix => try writer.writeAll("prefix"),
+                .lib => try writer.writeAll("lib"),
+                .bin => try writer.writeAll("bin"),
+                .header => try writer.writeAll("header"),
+                .custom => |path| try writer.print("'{s}'", .{path}),
+            }
+        }
+    };
+
+    pub const RunStepArg = struct {
+        arg: std.build.RunStep.Arg,
+        builder: *std.build.Builder,
+
+        pub fn format(
+            run_step_arg: RunStepArg,
+            comptime fmt: []const u8,
+            options: std.fmt.FormatOptions,
+            writer: anytype,
+        ) !void {
+            _ = options;
+            _ = fmt;
+            switch (run_step_arg.arg) {
+                .bytes => |bytes| try writer.print("&quot;{s}&quot;", .{bytes}),
+                .file_source => |file_source| try writer.print("{}", .{formatting.FormattedFileSource{ .file_source = file_source, .builder = run_step_arg.builder }}),
+                .artifact => |artifact| try writer.print("{}", .{formatting.Artifact{ .lib_exe_obj_step = artifact }}),
+            }
+        }
+    };
+};

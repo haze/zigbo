@@ -18,8 +18,7 @@ pub fn build(b: *std.build.Builder) void {
 
     var stdout = std.io.getStdOut();
     var stdout_writer = stdout.writer();
-    const StdoutGraphOutputWriter = zigbo.GraphOutputStep(@TypeOf(stdout_writer));
-    const graph_step = StdoutGraphOutputWriter.init(b, stdout_writer, null);
+    const graph_step = zigbo.graphOutputStep(b, stdout_writer);
     const build_graph_step = b.step("graph", "Output the build graph as a mermaid diagram");
     build_graph_step.dependOn(&graph_step.step);
 }
