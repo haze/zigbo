@@ -27,19 +27,17 @@ flowchart TD
 Zigbo exports a `GraphOutputStep` comptime function, which accepts a type of a reader. You can use this to configure the output of the diagram. Below is a simple example of configuring a top level `graph` step to export the graph to stdout.
 
 ``` zig
-var stdout = std.io.getStdOut();
-var stdout_writer = stdout.writer();
-const StdoutGraphOutputWriter = zigbo.GraphOutputStep(@TypeOf(stdout_writer));
-const graph_step = StdoutGraphOutputWriter.init(b, stdout_writer, null);
+const stdout = std.io.getStdOut().writer();
+const build_graph = zigbo.graphOutputStep(b, stdout);
 const build_graph_step = b.step("graph", "Output the build graph as a mermaid diagram");
-build_graph_step.dependOn(&graph_step.step);
+build_graph_step.dependOn(&build_graph.step);
 ```
 
-If you have custom steps within your build graph, Zigbo by default cannot display all the details of your step (all of the information is opt-in.) Below is an example of using a callback function to provide information for specific steps based on their step name. There is no other information about a custom step, so we have to make do.
+If you have custom steps within your build graph, Zigbo by default cannot display all the details of your step (all of the information is opt-in). Below is an example of using a callback function to provide information for specific steps based on their step name.
 
 ```zig
-const graph_step = StdoutGraphOutputWriter.init(b, stdout_writer, struct {
-    fn wrapper(step: *std.build.Step, writer: StdoutGraphOutputWriter.Writer) StdoutGraphOutputWriter.GraphOutputWriteFnResult {
+build_graph.setCustomStepCallback(struct{
+    fn customCallback(step: *std.build.Step, writer: anytype) !?zigbo.GraphOutputWriteFnInstruction {
         if (std.mem.startsWith(u8, step.name, "has-")) {
             libressl_build.CDependencyTestStep.mermaidDescribe(step, writer) catch |err| {
                 try writer.print("error.{s}", .{@errorName(err)});
@@ -59,7 +57,7 @@ const graph_step = StdoutGraphOutputWriter.init(b, stdout_writer, struct {
 
         return .use_default_implementation;
     }
-}.wrapper);
+}.customCallback);
 ```
 
 ### how
