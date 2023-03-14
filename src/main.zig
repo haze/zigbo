@@ -83,7 +83,7 @@ pub fn GraphOutputStep(comptime WriterType: type) type {
 
                     // TODO(haze): better messages for these
                     .options => try writer.writeAll("Options step"),
-                    .install_raw => try writer.writeAll("InstallRaw step"),
+                    .objcopy => try writer.writeAll("ObjCopy step"),
                     .config_header => try writer.writeAll("Configure Header step"),
                     .check_object => try writer.writeAll("CHeck Object step"),
                     .check_file => try writer.writeAll("Check File step"),
@@ -392,7 +392,7 @@ const step_inspection_functions = struct {
         const run_step = @fieldParentPtr(std.Build.RunStep, "step", step);
 
         try writer.writeAll("\"Run\\nargv: [");
-        for (run_step.argv.items) |arg, index| {
+        for (run_step.argv.items, 0..) |arg, index| {
             try writer.print("{}", .{formatting.RunStepArg{ .arg = arg, .builder = run_step.builder }});
             if (index != run_step.argv.items.len - 1) {
                 try writer.writeAll(", ");
@@ -404,7 +404,7 @@ const step_inspection_functions = struct {
             try writer.print("\\ncwd: '{s}'", .{cwd});
         }
 
-        if (run_step.expected_exit_code) |exit_code| {
+        if (run_step.expected_term) |exit_code| {
             try writer.print("\\nexpecting exit code: {}", .{exit_code});
         }
 
@@ -462,7 +462,7 @@ const formatting = struct {
             _ = fmt;
             _ = options;
             const path = formatter.file_source.getPath(formatter.builder);
-            const relative_path = std.fs.path.relative(formatter.builder.allocator, formatter.builder.build_root, path) catch unreachable;
+            const relative_path = formatter.builder.build_root.join(formatter.builder.allocator, &.{path}) catch unreachable;
             defer formatter.builder.allocator.free(relative_path); // there's a chance this could get freed, with it (presumably) being the latest allocation.
             try writer.writeAll(relative_path);
         }
@@ -490,7 +490,7 @@ const formatting = struct {
             const builder = formatter.builder;
             const install_path = builder.getInstallPath(formatter.install_dir, ".");
 
-            const dst_rel_path = std.fs.path.relative(builder.allocator, builder.build_root, install_path) catch unreachable;
+            const dst_rel_path = builder.build_root.join(builder.allocator, &.{install_path}) catch unreachable;
             defer builder.allocator.free(dst_rel_path); // there's a chance this could get freed, with it (presumably) being the latest allocation.
 
             try writer.writeAll(dst_rel_path);
@@ -519,6 +519,7 @@ const formatting = struct {
                 .bytes => |bytes| try writer.print("&quot;{s}&quot;", .{bytes}),
                 .file_source => |file_source| try writer.print("{}", .{formatting.FormattedFileSource{ .file_source = file_source, .builder = run_step_arg.builder }}),
                 .artifact => |artifact| try writer.print("{}", .{formatting.Artifact{ .compile_step = artifact }}),
+                .output => |out| try writer.print("{s}", .{out.basename}),
             }
         }
     };
